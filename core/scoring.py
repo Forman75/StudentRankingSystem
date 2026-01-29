@@ -1,6 +1,6 @@
 from __future__ import annotations
-import pandas as pd
 import numpy as np
+import pandas as pd
 from typing import Dict, Any, List, Tuple
 from .entity import unify_students
 
@@ -14,15 +14,15 @@ def _pick_mode(series: pd.Series) -> str:
     except Exception:
         return s.iloc[0]
 
-
 def _section(category: str) -> str:
     return {
         "A": "Успеваемость",
         "B": "Посещаемость",
         "C": "Активность",
-        "X": "Ручные доп. баллы"
+        "X": "Ручные доп. баллы",
     }.get(category, "Другое")
 
+ID_COL = "Номер студенческого билета"
 
 def compute_scores(
     evidence_rows: List[Dict[str, Any]],
@@ -32,7 +32,6 @@ def compute_scores(
     if evid.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    # учитываем ФИО/группу/ID для сшивки
     mapping = unify_students(evid, enable_fuzzy=True)
     evid["student_key_canon"] = evid["student_key"].map(mapping).fillna(evid["student_key"])
 
@@ -42,10 +41,13 @@ def compute_scores(
         "student_id": _pick_mode
     }).reset_index()
 
-    A_norm = evid[evid["category"] == "A"].groupby("student_key_canon")["points"].mean()  # 0..1
-    B_rate = evid[evid["category"] == "B"].groupby("student_key_canon")["points"].mean()  # 0..1
-    C_sum  = evid[evid["category"] == "C"].groupby("student_key_canon")["points"].sum()   # points
-    X_sum  = evid[evid["category"] == "X"].groupby("student_key_canon")["points"].sum()   # points
+    A_norm = evid[evid["category"] == "A"].groupby("student_key_canon")["points"].mean()
+    B_rate = evid[evid["category"] == "B"].groupby("student_key_canon")["points"].mean()
+    C_sum  = evid[evid["category"] == "C"].groupby("student_key_canon")["points"].sum()
+    X_sum  = evid[evid["category"] == "X"].groupby("student_key_canon")["points"].sum()
+
+    A_cnt = evid[evid["category"] == "A"].groupby("student_key_canon").size()
+    B_cnt = evid[evid["category"] == "B"].groupby("student_key_canon").size()
 
     students = sorted(evid["student_key_canon"].unique().tolist())
 
@@ -54,7 +56,6 @@ def compute_scores(
     thrB = float(params.get("att_threshold", 0.60))
 
     summary_rows = []
-
     for sk in students:
         a = float(A_norm.get(sk, np.nan))
         b = float(B_rate.get(sk, np.nan))
@@ -81,7 +82,7 @@ def compute_scores(
         summary_rows.append({
             "ФИО": fio,
             "Группа": grp,
-            "ID": sid,
+            ID_COL: sid,
             "Успеваемость (норма 0..1)": "" if np.isnan(a) else round(a, 4),
             "Успеваемость (баллы)": round(A_pts, 2),
             "Посещаемость (%)": "" if np.isnan(b) else round(b * 100, 2),
@@ -96,7 +97,7 @@ def compute_scores(
     summary_df.insert(0, "Место", summary_df.index + 1)
 
     ranking_df = summary_df[[
-        "Место", "ФИО", "Группа", "ID",
+        "Место", "ФИО", "Группа", ID_COL,
         "Успеваемость (баллы)",
         "Посещаемость (баллы)",
         "Активность (баллы)",
@@ -105,45 +106,92 @@ def compute_scores(
     ]].copy()
 
     disp_map = display.set_index("student_key_canon")[["student_name", "group", "student_id"]]
-    evid2 = evid.copy()
-    evid2["Раздел"] = evid2["category"].map(_section).fillna("Другое")
-    evid2["ФИО"] = evid2["student_key_canon"].map(lambda k: disp_map.loc[k, "student_name"] if k in disp_map.index else "")
-    evid2["Группа"] = evid2["student_key_canon"].map(lambda k: disp_map.loc[k, "group"] if k in disp_map.index else "")
-    evid2["ID"] = evid2["student_key_canon"].map(lambda k: disp_map.loc[k, "student_id"] if k in disp_map.index else "")
 
-    def awarded(row) -> float:
-        cat = row["category"]
-        p = float(row["points"])
-        if cat == "A":
-            return float(np.clip(p, 0, 1) * mpA)
-        if cat == "B":
-            return float(np.clip(p, 0, 1) * mpB)
+    def _fio(sk: str) -> str:
+        return disp_map.loc[sk, "student_name"] if sk in disp_map.index else ""
+
+    def _grp(sk: str) -> str:
+        return disp_map.loc[sk, "group"] if sk in disp_map.index else ""
+
+    def _sid(sk: str) -> str:
+        return disp_map.loc[sk, "student_id"] if sk in disp_map.index else ""
+
+    detail_rows: List[Dict[str, Any]] = []
+
+    for _, row in evid.iterrows():
+        sk = row["student_key_canon"]
+        cat = str(row.get("category", ""))
+        p = float(row.get("points", 0.0) or 0.0)
+
         if cat in ("C", "X"):
-            return float(p)
-        return 0.0
+            awarded = float(p)
+        else:
+            awarded = 0.0
 
-    def value_col(row):
-        cat = row["category"]
-        p = float(row["points"])
         if cat == "A":
-            return f"{p:.4f} (норма)"
-        if cat == "B":
-            return f"{p*100:.2f}%"
-        if cat in ("C", "X"):
-            return f"{p:.2f} (баллы)"
-        return str(row["points"])
+            val = f"{p:.4f} (норма)"
+            basis_prefix = "[сырые данные, учтено в среднем] "
+        elif cat == "B":
+            val = f"{p*100:.2f}%"
+            basis_prefix = "[сырые данные, учтено в среднем] "
+        elif cat in ("C", "X"):
+            val = f"{p:.2f} (баллы)"
+            basis_prefix = ""
+        else:
+            val = str(row.get("points", ""))
+            basis_prefix = ""
 
-    detail_df = pd.DataFrame({
-        "ФИО": evid2["ФИО"],
-        "Группа": evid2["Группа"],
-        "ID": evid2["ID"],
-        "Раздел": evid2["Раздел"],
-        "Основание": evid2.get("detail", ""),
-        "Значение": evid2.apply(value_col, axis=1),
-        "Начислено (баллы)": evid2.apply(awarded, axis=1).round(2),
-        "Источник": evid2.get("source", ""),
-        "Строка (Excel)": evid2.get("origin_row", "")
-    })
+        detail_rows.append({
+            "ФИО": _fio(sk),
+            "Группа": _grp(sk),
+            ID_COL: _sid(sk),
+            "Раздел": _section(cat),
+            "Основание": basis_prefix + str(row.get("detail", "")),
+            "Значение": val,
+            "Начислено (баллы)": round(awarded, 2),
+            "Источник": str(row.get("source", "")),
+            "Строка (Excel)": str(row.get("origin_row", "")),
+        })
+
+    for sk in students:
+        a = float(A_norm.get(sk, np.nan))
+        nA = int(A_cnt.get(sk, 0))
+        if not np.isnan(a) and nA > 0:
+            A_pts = float(np.clip(a, 0, 1) * mpA)
+            detail_rows.append({
+                "ФИО": _fio(sk),
+                "Группа": _grp(sk),
+                ID_COL: _sid(sk),
+                "Раздел": "Успеваемость",
+                "Основание": f"Итог по успеваемости: среднее по {nA} источникам",
+                "Значение": f"{a:.4f} (норма)",
+                "Начислено (баллы)": round(A_pts, 2),
+                "Источник": "Агрегировано системой",
+                "Строка (Excel)": "",
+            })
+
+        b = float(B_rate.get(sk, np.nan))
+        nB = int(B_cnt.get(sk, 0))
+        if not np.isnan(b) and nB > 0:
+            if b < thrB:
+                B_pts = 0.0
+                note = f"ниже порога {int(thrB*100)}%"
+            else:
+                B_pts = float(np.clip(b, 0, 1) * mpB)
+                note = ""
+            detail_rows.append({
+                "ФИО": _fio(sk),
+                "Группа": _grp(sk),
+                ID_COL: _sid(sk),
+                "Раздел": "Посещаемость",
+                "Основание": f"Итог по посещаемости: среднее по {nB} источникам" + (f" ({note})" if note else ""),
+                "Значение": f"{b*100:.2f}%",
+                "Начислено (баллы)": round(B_pts, 2),
+                "Источник": "Агрегировано системой",
+                "Строка (Excel)": "",
+            })
+
+    detail_df = pd.DataFrame(detail_rows)
 
     sec_order = {"Успеваемость": 1, "Посещаемость": 2, "Активность": 3, "Ручные доп. баллы": 4, "Другое": 99}
     detail_df["__sec"] = detail_df["Раздел"].map(sec_order).fillna(99)
@@ -164,5 +212,4 @@ def compute_scores(
     group_df["Медиана"] = group_df["Медиана"].round(2)
     group_df["Максимум"] = group_df["Максимум"].round(2)
     group_df = group_df.sort_values(["Средний"], ascending=False).reset_index(drop=True)
-
     return ranking_df, summary_df, detail_df, group_df
