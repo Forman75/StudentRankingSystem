@@ -83,9 +83,9 @@ def compute_scores(
             "ФИО": fio,
             "Группа": grp,
             ID_COL: sid,
-            "Успеваемость (норма 0..1)": "" if np.isnan(a) else round(a, 4),
+            "Успеваемость (норма 0..1)": None if np.isnan(a) else round(a, 4),
             "Успеваемость (баллы)": round(A_pts, 2),
-            "Посещаемость (%)": "" if np.isnan(b) else round(b * 100, 2),
+            "Посещаемость (%)": None if np.isnan(b) else round(b * 100, 2),
             "Посещаемость (баллы)": round(B_pts, 2),
             "Активность (баллы)": round(C_pts, 2),
             "Ручные доп. баллы": round(x, 2),
@@ -94,7 +94,9 @@ def compute_scores(
         })
 
     summary_df = pd.DataFrame(summary_rows).sort_values("ИТОГО (баллы)", ascending=False).reset_index(drop=True)
-    summary_df.insert(0, "Место", summary_df.index + 1)
+    # Используем метод для классического ранжирования (1, 1, 3, 4...)
+    ranks = summary_df["ИТОГО (баллы)"].rank(method='min', ascending=False).astype(int)
+    summary_df.insert(0, "Место", ranks)
 
     ranking_df = summary_df[[
         "Место", "ФИО", "Группа", ID_COL,

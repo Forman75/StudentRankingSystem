@@ -2,6 +2,7 @@ from __future__ import annotations
 import re
 import streamlit as st
 import pandas as pd
+import hashlib
 from core.ingest import load_tables_from_uploads
 from core.infer import build_dataframe_with_headers, infer_schema, persist_profile_for_schema
 from core.extract import (extract_attendance_wide, extract_grades_wide, extract_activities_text, make_student_key)
@@ -20,7 +21,6 @@ st.title("Система анализа таблиц и формирования
 # Helpers
 # =========================
 _URL_RE = re.compile(r"https?://\S+", re.I)
-_KEY_SAN_RE = re.compile(r"[^a-zA-Z0-9_]+")
 
 ISSUE_MAP = {
     "missing_proof_url": ("error", "Нет ссылки-доказательства. В режиме формы баллы не начисляются."),
@@ -34,11 +34,8 @@ ISSUE_MAP = {
 }
 
 def _safe_key_prefix(src_key: str) -> str:
-    # стабильный ключ для виджетов, чтобы не было коллизий при добавлении/удалении файлов
-    t = _KEY_SAN_RE.sub("_", src_key)
-    if len(t) > 180:
-        t = t[:180]
-    return t
+    # Используем MD5-хеш для создания безопасного и уникального ключа, который поддерживает кириллицу и спецсимволы в именах файлов.
+    return hashlib.md5(src_key.encode("utf-8")).hexdigest()
 
 def _strip_urls(s: str) -> str:
     return _URL_RE.sub(" ", s or "")
@@ -217,9 +214,12 @@ def _load_roster(file) -> set[str]:
         sid = str(row.get(id_col, "")).strip() if id_col else ""
         grp = str(row.get(group_col, "")).strip() if group_col else ""
 
+        # Добавляем ID-ключ, если есть ID
         if sid and norm_text(sid) not in ("nan", "none", "0"):
             keys.add(f"id:{norm_text(sid)}")
-        elif fio:
+
+        # добавляем Name-ключ, если есть ФИО
+        if fio:
             keys.add(f"name:{norm_name(fio)}|grp:{norm_text(grp)}")
 
     return keys
